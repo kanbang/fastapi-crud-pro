@@ -1,7 +1,9 @@
 from typing import Optional, Type, Any
 
 from fastapi import Depends, HTTPException
+from fastapi.responses import ORJSONResponse
 from pydantic import create_model
+from starlette import status
 
 from ._types import T, PAGINATION, PYDANTIC_SCHEMA
 
@@ -31,12 +33,6 @@ def schema_factory(
         for f_name, f in schema_cls.model_fields.items()
         if f_name != pk_field_name
     }
-
-    # fields = {
-    #     f.name: (f.type_, ...)
-    #     for f in schema_cls.__fields__.values()
-    #     if f.name != pk_field_name
-    # }
 
     name = schema_cls.__name__ + name
     schema: Type[T] = create_model(__model_name=name, **fields)  # type: ignore
@@ -81,3 +77,24 @@ def pagination_factory(max_limit: Optional[int] = None) -> Any:
         return {"skip": skip, "limit": limit}
 
     return Depends(pagination)
+
+
+def resp_success(
+    data=None,
+    total=None,
+    code=0,
+    msg="OK",
+    http_code=status.HTTP_200_OK,
+    headers={},
+):
+    if data is None:
+        data = {}
+
+    success = True if code == 0 else False
+    meta = {"total": 0 if total is None else total}
+    content = dict(
+        code=code, msg=msg, meta=meta, data=data, success=success
+    )
+
+    return ORJSONResponse(status_code=http_code, content=content, headers=headers)
+

@@ -1,5 +1,13 @@
+'''
+Descripttion: 
+version: 0.x
+Author: zhai
+Date: 2024-05-25 09:03:01
+LastEditors: zhai
+LastEditTime: 2024-05-25 20:53:40
+'''
 from enum import Enum
-from typing import Dict, Generic, Type, TypeVar, Optional, Sequence, Union, List
+from typing import Dict, Generic, TypeVar, Optional, Sequence
 
 from fastapi.params import Depends
 from pydantic import BaseModel
@@ -35,6 +43,11 @@ class RespModelT(BaseModel, Generic[T]):
     data: T
     success: bool
     trace_id: Optional[str]
+
+#########################################################################
+class IdNotExist(Exception):
+    def __init__(self):
+        super().__init__("id不存在")
 
 
 

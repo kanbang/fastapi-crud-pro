@@ -385,7 +385,3 @@ class CRUDGenerator(Generic[T], APIRouter, IOrmImpl):
 
     def _raise(self, e: Exception, status_code: int = 422) -> HTTPException:
         raise HTTPException(422, ", ".join(e.args)) from e
-
-    @staticmethod
-    def get_routes() -> List[str]:
-        return ["get_all", "create", "delete_all", "get_one", "update", "delete_one"]
