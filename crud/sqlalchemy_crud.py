@@ -346,8 +346,8 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             try:
                 db_model = self.db_model(**params)
                 db.add(db_model)
-                db.commit()
-                db.refresh(db_model)
+                await db.commit()
+                await db.refresh(db_model)
                 return resp_success(convert_to_pydantic(db_model, self.schema))
             except IntegrityError:
                 db.rollback()
@@ -480,9 +480,10 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                 user_data_filter == UserDataFilter.SELF_DATA
                 or user_data_filter == UserDataFilterSelf.SELF_DATA
             ):
-                sql_query = sql_query.where(
-                    self.db_model.created_by == request.state.user_id
-                )
+                if hasattr(request.state, 'user_id'):
+                    sql_query = sql_query.where(
+                        self.db_model.created_by == request.state.user_id
+                    )
 
             if relationships:
                 sql_query = self.__autoload_options(sql_query)
@@ -542,9 +543,10 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                 user_data_filter == UserDataFilter.SELF_DATA
                 or user_data_filter == UserDataFilterSelf.SELF_DATA
             ):
-                sql_query = sql_query.where(
-                    self.db_model.created_by == request.state.user_id
-                )
+                if hasattr(request.state, 'user_id'):
+                    sql_query = sql_query.where(
+                        self.db_model.created_by == request.state.user_id
+                    )
 
             if relationships:
                 sql_query = self.__autoload_options(sql_query)
@@ -588,9 +590,10 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                 user_data_filter == UserDataFilter.SELF_DATA
                 or user_data_filter == UserDataFilterSelf.SELF_DATA
             ):
-                sql_query = sql_query.where(
-                    self.db_model.created_by == request.state.user_id
-                )
+                if hasattr(request.state, 'user_id'):
+                    sql_query = sql_query.where(
+                        self.db_model.created_by == request.state.user_id
+                    )
 
             if relationships:
                 sql_query = self.__autoload_options(sql_query)
@@ -640,9 +643,10 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                     user_data_filter == UserDataFilter.SELF_DATA
                     or user_data_filter == UserDataFilterSelf.SELF_DATA
                 ):
-                    sql_query = sql_query.where(
-                        self.db_model.created_by == request.state.user_id
-                    )
+                    if hasattr(request.state, 'user_id'):
+                        sql_query = sql_query.where(
+                            self.db_model.created_by == request.state.user_id
+                        )
 
                 if relationships:
                     sql_query = self.__autoload_options(sql_query)
