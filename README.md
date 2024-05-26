@@ -95,7 +95,7 @@ python test_sqlalchemy_router.py
 
 #### Endpoint
 
-```http
+```sh
 curl -X 'POST' \
   'http://localhost:8010/employee/query?sort_by=-name&relationships=false&user_data_filter=ALL_DATA&skip=0' \
   -H 'accept: application/json' \
@@ -105,6 +105,7 @@ curl -X 'POST' \
   "retire": true
 }'
 ```
+
 #### Response 
 
 ```json
@@ -153,7 +154,7 @@ curl -X 'POST' \
 }
 ```
 
-#### `Filtering`
+### `Filtering`
 
 #### Filtering by DTO Fields
 
@@ -173,7 +174,7 @@ To filter results by strict equality on specific fields, you can pass a JSON obj
 In the above example, only results where `department_id` is equal to 1 and `retire` is equal to `true` will be included in the response.
 
 
-#### `Sorting`
+### `Sorting`
 
 In the above example, `sort_by` is used to specify the sorting order:
 - `name` sorts the results in ascending order by the `name` field.
@@ -189,7 +190,157 @@ In the above example, `sort_by` is used to specify the sorting order:
 - `name` sorts the results in ascending order by the `name` field.
 - `-name` sorts the results in descending order by the `name` field.
 
+### `Relationships`
 
+
+When the `relationships` parameter is set to `true`, related data will be included in the query results. This is particularly useful for including foreign key relationships in the response.
+
+#### Example: Including Relationships
+
+```http
+GET /employee/query?sort_by=-name&relationships=true
+```
+
+#### Example Response with Relationships
+
+```json
+{
+  "code": 0,
+  "msg": "OK",
+  "meta": {
+    "total": 0
+  },
+  "data": [
+    {
+      "id": 3,
+      "number": "003",
+      "name": "name3",
+      "retire": true,
+      "retire_date": "2024-05-26T04:28:28.101000",
+      "department": {
+        "id": 1,
+        "name": "dept1",
+        "factor": 0
+      },
+      "department_id": 1,
+      "teams": [],
+      "teams_refids": null
+    },
+    {
+      "id": 2,
+      "number": "002",
+      "name": "name2",
+      "retire": true,
+      "retire_date": "2024-05-26T04:29:20.640000",
+      "department": {
+        "id": 1,
+        "name": "dept1",
+        "factor": 0
+      },
+      "department_id": 1,
+      "teams": [
+        {
+          "id": 2,
+          "name": "team2"
+        },
+        {
+          "id": 3,
+          "name": "team3"
+        }
+      ],
+      "teams_refids": null
+    },
+    {
+      "id": 1,
+      "number": "001",
+      "name": "name1",
+      "retire": true,
+      "retire_date": "2024-05-26T04:29:20.640000",
+      "department": {
+        "id": 1,
+        "name": "dept1",
+        "factor": 0
+      },
+      "department_id": 1,
+      "teams": [
+        {
+          "id": 1,
+          "name": "team1"
+        },
+        {
+          "id": 2,
+          "name": "team2"
+        }
+      ],
+      "teams_refids": null
+    }
+  ],
+  "success": true
+}
+```
+
+In this example, the `relationships` parameter is set to `true`, which includes the related `department` and `teams` data in the response for each `employee`.
+
+
+
+### `Complex Conditions` with `query_ex`
+
+FastAPI-CRUD-Pro supports advanced filtering with complex conditions through the `query_ex` endpoint. This allows the use of various operators, including `=`, `!=`, `>`, `<`, `>=`, `<=`, `like`, and `in` to build complex queries.
+
+#### Complex Query
+
+```sh
+curl -X 'POST' \
+  'http://localhost:8010/employee/query_ex?sort_by=name&relationships=false' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '[
+  ["name", "like", "na%"],
+  ["id", "<=", 2]
+]'
+```
+
+#### Response
+
+```json
+{
+  "code": 0,
+  "msg": "OK",
+  "meta": {
+    "total": 0
+  },
+  "data": [
+    {
+      "id": 1,
+      "number": "001",
+      "name": "name1",
+      "retire": true,
+      "retire_date": "2024-05-26T04:29:20.640000",
+      "department": null,
+      "department_id": 1,
+      "teams": null,
+      "teams_refids": null
+    },
+    {
+      "id": 2,
+      "number": "002",
+      "name": "name2",
+      "retire": true,
+      "retire_date": "2024-05-26T04:29:20.640000",
+      "department": null,
+      "department_id": 1,
+      "teams": null,
+      "teams_refids": null
+    }
+  ],
+  "success": true
+}
+```
+
+In this example, the `query_ex` endpoint is used to filter employees where the `name` starts with "na" and the `id` is less than or equal to 2. The `sort_by` parameter sorts the results by the `name` field in ascending order, and `relationships=false` excludes related data from the response.
 
 
 ## Quick Start
+
+### Inspiration
+FastAPI-CRUD-Pro is inspired by fastapi-crudrouter and incorporates many of its great features.
