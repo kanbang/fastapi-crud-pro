@@ -1,7 +1,9 @@
 # FastAPI-CRUD-Pro
 
-
 FastAPI-CRUD-Pro is a powerful library inspired by **[fastapi-crudrouter](https://github.com/awtkns/fastapi-crudrouter)**. It leverages FastAPI and Pydantic to automatically generate CRUD routes from simple ORM and DTO definitions. It supports advanced filtering, flexible sorting, one-to-many and many-to-many foreign key relationships, and automatic inclusion of foreign key data in queries. Currently, it supports SQLAlchemy, with Tortoise ORM support coming soon.
+
+### Inspiration
+FastAPI-CRUD-Pro is inspired by fastapi-crudrouter and incorporates many of its great features.
 
 ## Features
 
@@ -341,6 +343,3 @@ In this example, the `query_ex` endpoint is used to filter employees where the `
 
 
 ## Quick Start
-
-### Inspiration
-FastAPI-CRUD-Pro is inspired by fastapi-crudrouter and incorporates many of its great features.
