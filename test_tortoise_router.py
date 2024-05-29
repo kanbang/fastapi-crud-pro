@@ -10,40 +10,41 @@ from typing import Union
 
 from fastapi import FastAPI
 from fastapi.concurrency import asynccontextmanager
-from pydantic import BaseModel
-
-from crud.tortoise_crud import TortoiseCRUDRouter
 from tortoise.contrib.fastapi import register_tortoise
 
-# from sqlalchemydemo.db import create_db
-from tortoisedemo.models import PotatoModel
-
-
-class Potato(BaseModel):
-    id: int
-    color: str
-    mass: float
-    thickness: float
-    type: str
 
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # app startup
-    async with register_tortoise(
-        app,
-        db_url="sqlite://:memory:",
-        modules={"models": ["models"]},
-        generate_schemas=True,
-        add_exception_handlers=True,
-    ):
-        # db connected
-        yield
-        # app teardown
-    # db connections closed
 
-app = FastAPI(title="FastapiCrudPro", lifespan=lifespan)
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
+#     # app startup
+#     async with register_tortoise(
+#         app,
+#         db_url="sqlite://tortoise.sqlite3",
+#         modules={"models": ["tortoisedemo.models"]},
+#         generate_schemas=True,
+#         add_exception_handlers=True,
+#     ):
+#         # db connected
+#         yield
+#         # app teardown
+#     # db connections closed
+
+# app = FastAPI(title="FastapiCrudPro", lifespan=lifespan)
+
+app = FastAPI(title="FastapiCrudPro")
+register_tortoise(
+    app,
+    db_url="sqlite://tortoise.sqlite3",
+    modules={"models": ["tortoisedemo.models.dummy"]},
+    generate_schemas=True,
+    add_exception_handlers=True,
+)
+
+from tortoisedemo.api.dummy.views import dummy_router
+
+app.include_router(dummy_router)
 
 @app.get("/")
 def read_root():
@@ -57,4 +58,4 @@ def read_item(item_id: int, q: Union[str, None] = None):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app='main:app', host="127.0.0.1", port=8010, reload=True)
+    uvicorn.run(app='test_tortoise_router:app', host="127.0.0.1", port=8010, reload=True)

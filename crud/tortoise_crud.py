@@ -18,7 +18,7 @@ else:
     tortoise_installed = True
 
 from tortoise.queryset import QuerySet
-
+from tortoise import Tortoise, fields
 
 CALLABLE = Callable[..., Coroutine[Any, Any, Model]]
 CALLABLE_LIST = Callable[..., Coroutine[Any, Any, List[Model]]]
@@ -29,10 +29,21 @@ ModelType = TypeVar("ModelType", bound=Model)
 PydanticType = TypeVar("PydanticType", bound=BaseModel)
 
 
-def model_to_dict_no_relation(model):
-    return {
-        column.name: getattr(model, column.name) for column in model.__table__.columns
+# def model_to_dict_no_relation(model):
+#     return {
+#         column.name: getattr(model, column.name) for column in model.__table__.columns
+#     }
+
+def model_to_dict_no_relation(model: Model):
+    # Get the fields of the model that are not relations
+    non_relation_fields = {
+        field_name: getattr(model, field_name)
+        for field_name, field in model._meta.fields_map.items()
+        if not isinstance(field, (fields.relational.ForeignKeyFieldInstance,
+                                  fields.relational.BackwardFKRelation,
+                                  fields.relational.ManyToManyFieldInstance))
     }
+    return non_relation_fields
 
 
 def model_to_dict_relation(model, seen=None):
@@ -152,10 +163,11 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
 
     def _get_one(self, *args: Any, **kwargs: Any) -> CALLABLE:
         async def route(item_id: int) -> Model:
-            model = await self.db_model.filter(id=item_id).first()
+            model = await self.db_model.get(**{self._pk: item_id})
 
             if model:
-                return model
+                return resp_success(convert_to_pydantic(model, self.schema))
+                # return model
             else:
                 raise NOT_FOUND
 
@@ -221,7 +233,7 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             if _hard is False:
                 ret = await self.db_model.filter(**{self._pk: item_id, "enabled_flag": 1 }).update(enabled_flag=0)
             else:
-                ret = self.db_model.filter(**{self._pk: item_id}).delete()
+                ret = await self.db_model.filter(**{self._pk: item_id}).delete()
 
             return resp_success(bool(ret))
 
@@ -232,18 +244,11 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             _hard: bool = True, 
         ) -> RespModelT[Optional[int]]:
             if _hard is False:
-                stmt = (
-                    update(self.db_model)
-                    .where(
-                        self.db_model.enabled_flag == 1,
-                    )
-                    .values(enabled_flag=0)
-                )
+                ret = await self.db_model.filter(enabled_flag=1).update(enabled_flag=0)
             else:
-                stmt = delete(self.db_model)
+                ret = await self.db_model.all().delete()
 
-            result = await db.execute(stmt)
-            return resp_success(result.rowcount)
+            return resp_success(bool(ret))
 
         return route
 
@@ -253,57 +258,67 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             request: Request,
             
         ) -> RespModelT[Optional[self.schema]]:
-            raw_to_update = await db.get(self.db_model, getattr(model, self._pk))
+            raw_to_update = await self.db_model.get(**{self._pk: getattr(model, self._pk)})
+            
+            # .update(
+            #     **model.dict(exclude_unset=True)
+            # )
+            # return await self._get_one()(item_id)
+    
+            # raw_to_update = await db.get(self.db_model, getattr(model, self._pk))
 
             if raw_to_update:
                 model_dict = model.model_dump(exclude={self._pk}, exclude_none=True)
 
                 ##########################################################################################
                 # Relationships
-                relation_field = {
-                    key[:-7]: value
-                    for key, value in model_dict.items()
-                    if (
-                        value
-                        and key.endswith("_refids")
-                        and hasattr(self.db_model, key[:-7])
-                    )
-                }
+                # relation_field = {
+                #     key[:-7]: value
+                #     for key, value in model_dict.items()
+                #     if (
+                #         value
+                #         and key.endswith("_refids")
+                #         and hasattr(self.db_model, key[:-7])
+                #     )
+                # }
 
-                for rkey, rlist in relation_field.items():
-                    # 删除 relation_field, 否则 if hasattr(raw_to_update, key): 会异常
-                    if rkey in model_dict:
-                        del model_dict[rkey]
+                # for rkey, rlist in relation_field.items():
+                #     # 删除 relation_field, 否则 if hasattr(raw_to_update, key): 会异常
+                #     if rkey in model_dict:
+                #         del model_dict[rkey]
 
-                    prop = self.db_model.__mapper__.get_property(rkey)
-                    if isinstance(prop, Relationship):
-                        rclass = prop.mapper.class_
-                        rpk: str = rclass.__table__.primary_key.columns.keys()[0]
+                #     prop = self.db_model.__mapper__.get_property(rkey)
+                #     if isinstance(prop, Relationship):
+                #         rclass = prop.mapper.class_
+                #         rpk: str = rclass.__table__.primary_key.columns.keys()[0]
 
-                        rmodels = await db.execute(
-                            select(rclass).where(getattr(rclass, rpk).in_(rlist))
-                        )
+                #         rmodels = await db.execute(
+                #             select(rclass).where(getattr(rclass, rpk).in_(rlist))
+                #         )
 
-                        if prop.secondary is not None:
-                            rmodel_list = rmodels.scalars().fetchall()
-                            await db.run_sync(
-                                lambda session: getattr(raw_to_update, rkey)
-                            )
-                            setattr(raw_to_update, rkey, rmodel_list)
-                        else:
-                            for rmodel in rmodels.scalars():
-                                setattr(rmodel, prop.back_populates, raw_to_update)
+                #         if prop.secondary is not None:
+                #             rmodel_list = rmodels.scalars().fetchall()
+                #             await db.run_sync(
+                #                 lambda session: getattr(raw_to_update, rkey)
+                #             )
+                #             setattr(raw_to_update, rkey, rmodel_list)
+                #         else:
+                #             for rmodel in rmodels.scalars():
+                #                 setattr(rmodel, prop.back_populates, raw_to_update)
 
                 ##########################################################################################
 
                 params = await self.handle_data(model_dict, False, request)
 
+                 # Update the fields with provided data
                 for key, value in params.items():
                     if hasattr(raw_to_update, key):
                         setattr(raw_to_update, key, value)
 
-                await db.commit()
-                await db.refresh(raw_to_update)
+                # Save the updated model instance
+                await raw_to_update.save()
+            
+
                 return resp_success(convert_to_pydantic(raw_to_update, self.schema))
             else:
                 raise ValueError("id不存在!")
@@ -582,18 +597,21 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
         if isinstance(data, dict):
             # 1. 只保留数据库字段
             # 2. 筛选掉的特定键列表
+
+            db_model_fields = self.db_model._meta.fields_map.keys()
+
             keys_to_remove = ["creation_date", "updation_date", "enabled_flag"]
             params = {
                 key: value
                 for key, value in data.items()
-                if (hasattr(self.db_model, key) and (key not in keys_to_remove))
+                if ((key in db_model_fields) and (key not in keys_to_remove))
             }
 
             # 添加属性
-            params["trace_id"] = request.state.trace_id
+            params["trace_id"] = getattr(request.state, 'trace_id', 0)
 
             # User Info
-            user_id = request.state.user_id or 0
+            user_id = getattr(request.state, 'user_id', 0)
 
             # if not params.get(self._pk, None):
             #     params["created_by"] = user_id
