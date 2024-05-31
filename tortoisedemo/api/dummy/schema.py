@@ -3,6 +3,8 @@ from datetime import datetime, date
 from typing import Optional
 
 
+
+
 class DummyCreateDTO(BaseModel):
     name: str
     age: int
@@ -13,6 +15,9 @@ class DummyCreateDTO(BaseModel):
     notes: str
     json_data: Optional[object] = None
 
+    # class Config:
+    #     orm_mode = True
+    #     # 此选项将允许我们将ORM对象实例转换为Pydantic对象实例 from_orm
 
 class DummyDTO(BaseModel):
     id: Optional[int] = None

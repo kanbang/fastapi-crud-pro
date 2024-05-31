@@ -26,11 +26,9 @@ from ._types import (
     UserDataFilter,
     UserDataFilterSelf,
     IdNotExist,
+    InvalidQueryException,
 )
 
-# Custom exception for invalid query
-class InvalidQueryException(Exception):
-    pass
 
 CALLABLE = Callable[..., RespModelT[Any]]
 

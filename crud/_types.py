@@ -50,4 +50,8 @@ class IdNotExist(Exception):
         super().__init__("id不存在")
 
 
+class InvalidQueryException(Exception):
+    def __init__(self):
+        super().__init__("invalid query")
+
 

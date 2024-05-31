@@ -1,12 +1,12 @@
 from datetime import datetime
 from typing import Any, Callable, List, Tuple, Type, TypeVar, cast, Coroutine, Optional, Union
 
-from fastapi import Depends, Request, Query
+from fastapi import Depends, HTTPException, Request, Query
 from fastapi.responses import ORJSONResponse
 from pydantic import BaseModel
 
 from ._base import CRUDGenerator, NOT_FOUND
-from ._types import DEPENDENCIES, PAGINATION, PYDANTIC_SCHEMA as SCHEMA, RespModelT, UserDataOption, UserDataFilter, UserDataFilterAll, UserDataFilterSelf
+from ._types import DEPENDENCIES, PAGINATION, PYDANTIC_SCHEMA as SCHEMA, RespModelT, UserDataOption, UserDataFilter, UserDataFilterAll, UserDataFilterSelf, InvalidQueryException, IdNotExist
 from ._utils import get_pk_type, resp_success
 
 try:
@@ -19,6 +19,7 @@ else:
 
 from tortoise.queryset import QuerySet
 from tortoise import Tortoise, fields
+from tortoise.expressions import Q
 
 CALLABLE = Callable[..., Coroutine[Any, Any, Model]]
 CALLABLE_LIST = Callable[..., Coroutine[Any, Any, List[Model]]]
@@ -103,6 +104,42 @@ def convert_to_pydantic(
     else:
         raise ValueError("Invalid input data type")
 
+
+
+# Mapping of operators to SQL operators
+operator_mapping = {
+    "=": "",
+    "!=": "__not",
+    ">": "__gt",
+    "<": "__lt",
+    ">=": "__gte",
+    "<=": "__lte",
+    "like": "__contains",
+    "in": "__in",
+}
+
+def parse_query(
+    query: List[Tuple[str, str, Union[str, int, float, datetime, List[Union[str, int, float]]]]],
+    queryset: QuerySet
+) -> QuerySet:
+    filter_conditions = Q()
+
+    for condition in query:
+        if len(condition) != 3:
+            raise InvalidQueryException("Each condition must have exactly 3 elements: field, operator, and value.")
+
+        field, operator, value = condition
+
+        if operator not in operator_mapping:
+            raise InvalidQueryException(f"Invalid operator: {operator}")
+
+        # Construct the field name with the appropriate operator suffix
+        field_with_operator = f"{field}{operator_mapping[operator]}"
+
+        # Add the condition to the Q object
+        filter_conditions &= Q(**{field_with_operator: value})
+
+    return queryset.filter(filter_conditions)
 
 
 class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
@@ -335,37 +372,28 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             
         ) -> RespModelT[Optional[self.schema]]:
             filter_dict = filter.model_dump(exclude_none=True)
-
-            sql_query = select(self.db_model).where(self.db_model.enabled_flag == 1)
+            
+            query = self.db_model.filter(enabled_flag=True)
 
             if (
                 user_data_filter == UserDataFilter.SELF_DATA
                 or user_data_filter == UserDataFilterSelf.SELF_DATA
             ):
-                sql_query = sql_query.where(
-                    self.db_model.created_by == request.state.user_id
-                )
+                if hasattr(request.state, 'user_id'):
+                    query = query.filter(created_by=request.state.user_id)
 
             if relationships:
-                sql_query = self.__autoload_options(sql_query)
+                query = self.__autoload_options(query)
 
             if filter_dict:
-                sql_query = sql_query.where(
-                    *(
-                        getattr(self.db_model, attr) == value
-                        for attr, value in filter_dict.items()
-                    )
-                )
+                query = query.filter(**filter_dict)
 
-            raw_models = await db.execute(sql_query)
-            model: Model = raw_models.scalars().first()
+            model = await query.first()
 
             if model:
-                return resp_success(
-                    convert_to_pydantic(model, self.schema, relationships)
-                )
+                return resp_success( convert_to_pydantic(model, self.schema, relationships) )
             else:
-                raise IdNotExist() from None
+                raise NOT_FOUND
 
         return route
 
@@ -387,53 +415,32 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             
         ) -> RespModelT[Optional[List[self.schema]]]:
             skip, limit = pagination.get("skip"), pagination.get("limit")
-
-            
+         
             query = self.db_model.filter(enabled_flag=True)
-
-            if user_data_filter == UserDataFilter.SELF_DATA:
-                query = query.filter(created_by=request.state.user_id)
-
-            if relationships:
-                query = self.__autoload_options(query)
-
-            if sort_by:
-                if sort_by.startswith("-"):
-                    query = query.order_by(f"-{sort_by[1:]}")
-                else:
-                    query = query.order_by(sort_by)
-
-            query = query.offset(skip).limit(limit)
-
-            total = await query.count()
-            models = await MyModel_Pydantic.from_queryset(query)
-
-
-            sql_query = select(self.db_model).where(self.db_model.enabled_flag == 1)
 
             if (
                 user_data_filter == UserDataFilter.SELF_DATA
                 or user_data_filter == UserDataFilterSelf.SELF_DATA
             ):
-                sql_query = sql_query.where(
-                    self.db_model.created_by == request.state.user_id
-                )
+                if hasattr(request.state, 'user_id'):
+                    query = query.filter(created_by=request.state.user_id)
+
+            total = await query.count()
 
             if relationships:
-                sql_query = self.__autoload_options(sql_query)
+                query = self.__autoload_options(query)
 
             if sort_by:
-                if sort_by.startswith("-"):
-                    sql_query = sql_query.order_by(desc(sort_by[1:]))
-                else:
-                    sql_query = sql_query.order_by(sort_by)
+                query = query.order_by(sort_by)
 
-            sql_query = sql_query.offset(skip).limit(limit)
 
-            total = await get_total_count(db, sql_query)
+            if skip:
+                query = query.offset(cast(int, skip))
 
-            raw_models = await db.execute(sql_query)
-            models: List[Model] = raw_models.scalars().fetchall()
+            if limit:
+                query = query.limit(limit)
+
+            models = await query
 
             return resp_success(
                 convert_to_pydantic(models, self.schema, relationships), total=total
@@ -453,41 +460,39 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             
         ) -> RespModelT[Optional[List[self.schema]]]:
             filter_dict = filter.model_dump(exclude_none=True)
+            
             skip, limit = pagination.get("skip"), pagination.get("limit")
-
-            sql_query = select(self.db_model).where(self.db_model.enabled_flag == 1)
+         
+            query = self.db_model.filter(enabled_flag=True)
 
             if (
                 user_data_filter == UserDataFilter.SELF_DATA
                 or user_data_filter == UserDataFilterSelf.SELF_DATA
             ):
-                sql_query = sql_query.where(
-                    self.db_model.created_by == request.state.user_id
-                )
-
-            if relationships:
-                sql_query = self.__autoload_options(sql_query)
+                if hasattr(request.state, 'user_id'):
+                    query = query.filter(created_by=request.state.user_id)
 
             if filter_dict:
-                sql_query = sql_query.where(
-                    *(
-                        getattr(self.db_model, attr) == value
-                        for attr, value in filter_dict.items()
-                    )
-                )
+                query = query.filter(**filter_dict)
+
+            total = await query.count()
+
+            if relationships:
+                query = self.__autoload_options(query)
 
             if sort_by:
-                if sort_by.startswith("-"):
-                    sql_query = sql_query.order_by(desc(sort_by[1:]))
-                else:
-                    sql_query = sql_query.order_by(sort_by)
+                query = query.order_by(sort_by)
 
-            sql_query = sql_query.offset(skip).limit(limit)
+            if skip:
+                query = query.offset(cast(int, skip))
 
-            raw_models = await db.execute(sql_query)
-            raw_models: List[Model] = raw_models.scalars().fetchall()
+            if limit:
+                query = query.limit(limit)
+
+            models = await query
+
             return resp_success(
-                convert_to_pydantic(raw_models, self.schema, relationships)
+                convert_to_pydantic(models, self.schema, relationships), total=total
             )
 
         return route
@@ -505,17 +510,16 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             
         ) -> RespModelT[Optional[List[self.schema]]]:
             skip, limit = pagination.get("skip"), pagination.get("limit")
-
+         
             try:
-                sql_query = select(self.db_model).where(self.db_model.enabled_flag == 1)
+                sql_query = self.db_model.filter(enabled_flag=True)
 
                 if (
                     user_data_filter == UserDataFilter.SELF_DATA
                     or user_data_filter == UserDataFilterSelf.SELF_DATA
                 ):
-                    sql_query = sql_query.where(
-                        self.db_model.created_by == request.state.user_id
-                    )
+                    if hasattr(request.state, 'user_id'):
+                        sql_query = sql_query.filter(created_by=request.state.user_id)
 
                 if relationships:
                     sql_query = self.__autoload_options(sql_query)
@@ -524,24 +528,23 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
                     sql_query = parse_query(query, sql_query)
 
                 if sort_by:
-                    # ? sort_by[1:]
-                    # if sort_by not in self.db_model.get_table_column_names():
-                    #     raise InvalidQueryException
+                    sql_query = sql_query.order_by(sort_by)
 
-                    if sort_by.startswith("-"):
-                        sql_query = sql_query.order_by(desc(sort_by[1:]))
-                    else:
-                        sql_query = sql_query.order_by(sort_by)
+                total = await sql_query.count()
 
-                sql_query = sql_query.offset(skip).limit(limit)
+                if skip:
+                    sql_query = sql_query.offset(cast(int, skip))
 
-                raw_models = await db.execute(sql_query)
-                models: List[Model] = raw_models.scalars().fetchall()
+                if limit:
+                    sql_query = sql_query.limit(limit)
+
+                models = await sql_query
+
                 return resp_success(
-                    convert_to_pydantic(models, self.schema, relationships)
+                    convert_to_pydantic(models, self.schema, relationships), total=total
                 )
 
-            except InvalidQueryException:
+            except Exception:
                 raise HTTPException(
                     status_code=400, detail="Invalid query format or sort_by field"
                 )
@@ -561,29 +564,13 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             # create 不定，TODO
             params = await self.handle_data(model_dict, True, request)
 
-            # if not isinstance(model_dict, dict):
-            #     raise ValueError("更新参数错误！")
+            if hasattr(model, self._pk):
+                item_id = getattr(model, self._pk)
+                mode, created = await self.db_model.update_or_create( **{self._pk, item_id}, defaults=params )
+            else:
+                pass
 
-            # id = params.get("id", None)
-            # params = await self.handle_data(data)
-
-            insert_stmt = insert(self.db_model).values(**params)
-
-            # mysql
-            # on_duplicate_key_stmt = insert_stmt.on_duplicate_key_update( **params)
-
-            # sqlite
-            # del params[self._pk]
-            on_duplicate_key_stmt = insert_stmt.on_conflict_do_update(
-                index_elements=[self._pk], set_=model_dict
-            )
-
-            result = await db.execute(on_duplicate_key_stmt)
-            if result.is_insert:
-                (primary_key,) = result.inserted_primary_key
-                model_dict[self._pk] = primary_key
-
-            return resp_success(convert_to_pydantic(model_dict, self.schema))
+            return resp_success(convert_to_pydantic(mode, self.schema), msg="created" if created else "update")
 
         return route
 
