@@ -3,22 +3,16 @@ from typing import Any, Callable, List, Tuple, Type, TypeVar, cast, Coroutine, O
 
 from fastapi import Depends, HTTPException, Request, Query
 from fastapi.responses import ORJSONResponse
+from fastapi.types import IncEx
 from pydantic import BaseModel
 
 from ._base import CRUDGenerator, NOT_FOUND
 from ._types import DEPENDENCIES, PAGINATION, PYDANTIC_SCHEMA as SCHEMA, RespModelT, UserDataOption, UserDataFilter, UserDataFilterAll, UserDataFilterSelf, InvalidQueryException, IdNotExist
 from ._utils import get_pk_type, resp_success
 
-try:
-    from tortoise.models import Model
-except ImportError:
-    Model = None  # type: ignore
-    tortoise_installed = False
-else:
-    tortoise_installed = True
-
+from tortoise.models import Model
 from tortoise.queryset import QuerySet
-from tortoise import Tortoise, fields
+from tortoise import fields
 from tortoise.expressions import Q
 
 CALLABLE = Callable[..., Coroutine[Any, Any, Model]]
@@ -162,9 +156,9 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
         delete_all_route: Union[bool, DEPENDENCIES] = True,
         **kwargs: Any
     ) -> None:
-        assert (
-            tortoise_installed
-        ), "Tortoise ORM must be installed to use the TortoiseCRUDRouter."
+        # assert (
+        #     tortoise_installed
+        # ), "Tortoise ORM must be installed to use the TortoiseCRUDRouter."
 
         self.db_model = db_model
         self._pk: str = db_model.describe()["pk_field"]["db_column"]
@@ -194,28 +188,28 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             query = self.db_model.all().offset(cast(int, skip))
             if limit:
                 query = query.limit(limit)
-            return await query
+            objs = await query
+
+            return resp_success(
+                convert_to_pydantic(objs, self.schema)
+            )
 
         return route
 
     def _get_one(self, *args: Any, **kwargs: Any) -> CALLABLE:
         async def route(item_id: int) -> Model:
-            model = await self.db_model.get(**{self._pk: item_id})
-
-            if model:
-                return resp_success(convert_to_pydantic(model, self.schema))
-                # return model
+            obj = await self.db_model.get(**{self._pk: item_id})
+            if obj:
+                return resp_success(convert_to_pydantic(obj, self.schema))
             else:
                 raise NOT_FOUND
 
         return route
 
     def _create(self, *args: Any, **kwargs: Any) -> CALLABLE:
-        async def route(model: self.create_schema) -> Model:  # type: ignore
-            db_model = self.db_model(**model.dict())
-            await db_model.save()
-
-            return db_model
+        async def route(model: self.create_schema, request: Request) -> Model:  # type: ignore
+            obj = await self.__create_obj_with_model(model, request, exclude={self._pk})
+            return resp_success(convert_to_pydantic(obj, self.schema))
 
         return route
 
@@ -239,10 +233,8 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
 
     def _delete_one(self, *args: Any, **kwargs: Any) -> CALLABLE:
         async def route(item_id: int) -> Model:
-            model: Model = await self._get_one()(item_id)
-            await self.db_model.filter(id=item_id).delete()
-
-            return model
+            ret = await self.db_model.filter(id=item_id).delete()
+            return resp_success(bool(ret))
 
         return route
 
@@ -253,11 +245,8 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             model: self.create_schema,  # type: ignore
             request: Request,
         ) -> RespModelT[Optional[self.schema]]:
-            
-            model_dict = model.model_dump(exclude={self._pk}, exclude_none=True)
-            db_model = self.db_model(**model_dict)
-            await db_model.save()
-            return resp_success(convert_to_pydantic(db_model, self.schema))
+            obj = await self.__create_obj_with_model(model, request, exclude={self._pk})
+            return resp_success(convert_to_pydantic(obj, self.schema))
 
         return route
     
@@ -289,74 +278,20 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
 
         return route
 
+
+
+
     def _kupdate(self, *args: Any, **kwargs: Any) -> CALLABLE:
         async def route(
             model: self.schema,
             request: Request,
             
         ) -> RespModelT[Optional[self.schema]]:
-            raw_to_update = await self.db_model.get(**{self._pk: getattr(model, self._pk)})
-            
-            # .update(
-            #     **model.dict(exclude_unset=True)
-            # )
-            # return await self._get_one()(item_id)
-    
-            # raw_to_update = await db.get(self.db_model, getattr(model, self._pk))
+            obj = await self.db_model.get(**{self._pk: getattr(model, self._pk)})
 
-            if raw_to_update:
-                model_dict = model.model_dump(exclude={self._pk}, exclude_none=True)
-
-                ##########################################################################################
-                # Relationships
-                # relation_field = {
-                #     key[:-7]: value
-                #     for key, value in model_dict.items()
-                #     if (
-                #         value
-                #         and key.endswith("_refids")
-                #         and hasattr(self.db_model, key[:-7])
-                #     )
-                # }
-
-                # for rkey, rlist in relation_field.items():
-                #     # 删除 relation_field, 否则 if hasattr(raw_to_update, key): 会异常
-                #     if rkey in model_dict:
-                #         del model_dict[rkey]
-
-                #     prop = self.db_model.__mapper__.get_property(rkey)
-                #     if isinstance(prop, Relationship):
-                #         rclass = prop.mapper.class_
-                #         rpk: str = rclass.__table__.primary_key.columns.keys()[0]
-
-                #         rmodels = await db.execute(
-                #             select(rclass).where(getattr(rclass, rpk).in_(rlist))
-                #         )
-
-                #         if prop.secondary is not None:
-                #             rmodel_list = rmodels.scalars().fetchall()
-                #             await db.run_sync(
-                #                 lambda session: getattr(raw_to_update, rkey)
-                #             )
-                #             setattr(raw_to_update, rkey, rmodel_list)
-                #         else:
-                #             for rmodel in rmodels.scalars():
-                #                 setattr(rmodel, prop.back_populates, raw_to_update)
-
-                ##########################################################################################
-
-                params = await self.handle_data(model_dict, False, request)
-
-                 # Update the fields with provided data
-                for key, value in params.items():
-                    if hasattr(raw_to_update, key):
-                        setattr(raw_to_update, key, value)
-
-                # Save the updated model instance
-                await raw_to_update.save()
-            
-
-                return resp_success(convert_to_pydantic(raw_to_update, self.schema))
+            if obj:
+                await self.__update_obj_with_model(obj, model, request)
+                return resp_success(convert_to_pydantic(obj, self.schema))
             else:
                 raise ValueError("id不存在!")
 
@@ -388,10 +323,10 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             if filter_dict:
                 query = query.filter(**filter_dict)
 
-            model = await query.first()
+            obj = await query.first()
 
-            if model:
-                return resp_success( convert_to_pydantic(model, self.schema, relationships) )
+            if obj:
+                return resp_success( convert_to_pydantic(obj, self.schema, relationships) )
             else:
                 raise NOT_FOUND
 
@@ -433,17 +368,16 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             if sort_by:
                 query = query.order_by(sort_by)
 
-
             if skip:
                 query = query.offset(cast(int, skip))
 
             if limit:
                 query = query.limit(limit)
 
-            models = await query
+            objs = await query
 
             return resp_success(
-                convert_to_pydantic(models, self.schema, relationships), total=total
+                convert_to_pydantic(objs, self.schema, relationships), total=total
             )
 
         return route
@@ -489,10 +423,10 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             if limit:
                 query = query.limit(limit)
 
-            models = await query
+            objs = await query
 
             return resp_success(
-                convert_to_pydantic(models, self.schema, relationships), total=total
+                convert_to_pydantic(objs, self.schema, relationships), total=total
             )
 
         return route
@@ -538,10 +472,10 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
                 if limit:
                     sql_query = sql_query.limit(limit)
 
-                models = await sql_query
+                objs = await sql_query
 
                 return resp_success(
-                    convert_to_pydantic(models, self.schema, relationships), total=total
+                    convert_to_pydantic(objs, self.schema, relationships), total=total
                 )
 
             except Exception:
@@ -558,23 +492,83 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             request: Request,
             
         ) -> RespModelT[Optional[self.schema]]:
-            # model_dict = model.model_dump(exclude={self._pk}, exclude_none=True)
-            model_dict = model.model_dump(exclude_none=True)
-
-            # create 不定，TODO
-            params = await self.handle_data(model_dict, True, request)
-
             if hasattr(model, self._pk):
                 item_id = getattr(model, self._pk)
-                mode, created = await self.db_model.update_or_create( **{self._pk, item_id}, defaults=params )
-            else:
-                pass
+                # obj = await self.db_model.get(**{self._pk: item_id})
+                obj = await self.db_model.filter(**{self._pk: item_id}).first()
+                if obj:
+                    await self.__update_obj_with_model(obj, model, request)
+                    return resp_success(convert_to_pydantic(obj, self.schema), msg="update")
 
-            return resp_success(convert_to_pydantic(mode, self.schema), msg="created" if created else "update")
+            obj = await self.__create_obj_with_model(model, request, exclude=None)
+            return resp_success(convert_to_pydantic(obj, self.schema), msg="created")
+                   
+            # model_dict = model.model_dump(exclude={self._pk}, exclude_none=True)
+            # params = await self.handle_data(model_dict, True, request)
+            # obj, created = await self.db_model.update_or_create( **{self._pk: item_id}, defaults=params )
 
         return route
 
-    async def handle_data(
+
+    async def __create_obj_with_model(self, model, request: Request, exclude: IncEx = None):
+        model_dict = model.model_dump(exclude=exclude, exclude_none=True)
+        params = await self.__handle_data(model_dict, True, request)
+        obj = self.db_model(**params)
+        await obj.save()
+        return obj
+
+    async def __update_obj_with_model(self, obj, model, request: Request):
+        model_dict = model.model_dump(exclude={self._pk}, exclude_none=True)
+
+        ##########################################################################################
+        # Relationships
+        # relation_field = {
+        #     key[:-7]: value
+        #     for key, value in model_dict.items()
+        #     if (
+        #         value
+        #         and key.endswith("_refids")
+        #         and hasattr(self.db_model, key[:-7])
+        #     )
+        # }
+
+        # for rkey, rlist in relation_field.items():
+        #     # 删除 relation_field, 否则 if hasattr(raw_to_update, key): 会异常
+        #     if rkey in model_dict:
+        #         del model_dict[rkey]
+
+        #     prop = self.db_model.__mapper__.get_property(rkey)
+        #     if isinstance(prop, Relationship):
+        #         rclass = prop.mapper.class_
+        #         rpk: str = rclass.__table__.primary_key.columns.keys()[0]
+
+        #         rmodels = await db.execute(
+        #             select(rclass).where(getattr(rclass, rpk).in_(rlist))
+        #         )
+
+        #         if prop.secondary is not None:
+        #             rmodel_list = rmodels.scalars().fetchall()
+        #             await db.run_sync(
+        #                 lambda session: getattr(raw_to_update, rkey)
+        #             )
+        #             setattr(raw_to_update, rkey, rmodel_list)
+        #         else:
+        #             for rmodel in rmodels.scalars():
+        #                 setattr(rmodel, prop.back_populates, raw_to_update)
+
+        ##########################################################################################
+
+        params = await self.__handle_data(model_dict, False, request)
+
+            # Update the fields with provided data
+        for key, value in params.items():
+            if hasattr(obj, key):
+                setattr(obj, key, value)
+
+        # Save the updated model instance
+        await obj.save()
+
+    async def __handle_data(
         self, data: Union[dict, list], create: bool, request: Request
     ) -> Union[dict, list]:
         """
@@ -611,7 +605,7 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             return params
 
         if isinstance(data, list):
-            params = [await self.handle_data(item, create, request) for item in data]
+            params = [await self.__handle_data(item, create, request) for item in data]
             return params
 
         return data
