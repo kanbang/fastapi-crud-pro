@@ -1,5 +1,16 @@
 from datetime import datetime
-from typing import Any, Callable, List, Tuple, Type, TypeVar, cast, Coroutine, Optional, Union
+from typing import (
+    Any,
+    Callable,
+    List,
+    Tuple,
+    Type,
+    TypeVar,
+    cast,
+    Coroutine,
+    Optional,
+    Union,
+)
 
 from fastapi import Depends, HTTPException, Request, Query
 from fastapi.responses import ORJSONResponse
@@ -7,12 +18,23 @@ from fastapi.types import IncEx
 from pydantic import BaseModel
 
 from ._base import CRUDGenerator, NOT_FOUND
-from ._types import DEPENDENCIES, PAGINATION, PYDANTIC_SCHEMA as SCHEMA, RespModelT, UserDataOption, UserDataFilter, UserDataFilterAll, UserDataFilterSelf, InvalidQueryException, IdNotExist
+from ._types import (
+    DEPENDENCIES,
+    PAGINATION,
+    PYDANTIC_SCHEMA as SCHEMA,
+    RespModelT,
+    UserDataOption,
+    UserDataFilter,
+    UserDataFilterAll,
+    UserDataFilterSelf,
+    InvalidQueryException,
+    IdNotExist,
+)
 from ._utils import get_pk_type, resp_success
 
 from tortoise.models import Model
 from tortoise.queryset import QuerySet
-from tortoise import fields
+from tortoise import fields, transactions
 from tortoise.expressions import Q
 
 CALLABLE = Callable[..., Coroutine[Any, Any, Model]]
@@ -29,14 +51,20 @@ PydanticType = TypeVar("PydanticType", bound=BaseModel)
 #         column.name: getattr(model, column.name) for column in model.__table__.columns
 #     }
 
+
 def model_to_dict_no_relation(model: Model):
     # Get the fields of the model that are not relations
     non_relation_fields = {
         field_name: getattr(model, field_name)
         for field_name, field in model._meta.fields_map.items()
-        if not isinstance(field, (fields.relational.ForeignKeyFieldInstance,
-                                  fields.relational.BackwardFKRelation,
-                                  fields.relational.ManyToManyFieldInstance))
+        if not isinstance(
+            field,
+            (
+                fields.relational.ForeignKeyFieldInstance,
+                fields.relational.BackwardFKRelation,
+                fields.relational.ManyToManyFieldInstance,
+            ),
+        )
     }
     return non_relation_fields
 
@@ -50,9 +78,44 @@ def model_to_dict_relation(model, seen=None):
 
     seen.add(model)
 
-    result = {
-        column.name: getattr(model, column.name) for column in model.__table__.columns
-    }
+    result = {}
+
+    # if field_name in model_class._meta.fetch_fields and issubclass(field_type, PydanticModel):
+    #         subclass_fetch_fields = _get_fetch_fields(
+    #             field_type, field_type.model_config["orig_model"]
+    #         )
+    #         if subclass_fetch_fields:
+    #             fetch_fields.extend([field_name + "__" + f for f in subclass_fetch_fields])
+    #         else:
+    #             fetch_fields.append(field_name)
+    # return fetch_fields
+
+    for field_name, field in model._meta.fields_map.items():
+        if isinstance(field, fields.relational.ForeignKeyFieldInstance):
+            # await model.fetch_related(field_name)
+            related = getattr(model, field_name)
+            if related:
+                result[field_name] = model_to_dict_no_relation(related)
+        elif isinstance(
+            field,
+            (
+                fields.relational.BackwardFKRelation,
+                fields.relational.ManyToManyFieldInstance,
+            ),
+        ):
+            # await model.fetch_related(field_name)
+            related = getattr(model, field_name)
+            if related:
+                result[field_name] = [
+                    model_to_dict_no_relation(item) for item in related.related_objects
+                ]
+        else:
+            result[field_name] = getattr(model, field_name)
+
+    return result
+
+    # await page.fetch_related('book')
+    # book = page.book
 
     for relationship in model.__mapper__.relationships:
         try:
@@ -72,6 +135,7 @@ def model_to_dict_relation(model, seen=None):
                 result[relationship.key] = model_to_dict_relation(related_obj, seen)
 
     return result
+
 
 def convert_to_pydantic(
     data: Union[dict, ModelType, List[ModelType]],
@@ -99,7 +163,6 @@ def convert_to_pydantic(
         raise ValueError("Invalid input data type")
 
 
-
 # Mapping of operators to SQL operators
 operator_mapping = {
     "=": "",
@@ -112,15 +175,20 @@ operator_mapping = {
     "in": "__in",
 }
 
+
 def parse_query(
-    query: List[Tuple[str, str, Union[str, int, float, datetime, List[Union[str, int, float]]]]],
-    queryset: QuerySet
+    query: List[
+        Tuple[str, str, Union[str, int, float, datetime, List[Union[str, int, float]]]]
+    ],
+    queryset: QuerySet,
 ) -> QuerySet:
     filter_conditions = Q()
 
     for condition in query:
         if len(condition) != 3:
-            raise InvalidQueryException("Each condition must have exactly 3 elements: field, operator, and value.")
+            raise InvalidQueryException(
+                "Each condition must have exactly 3 elements: field, operator, and value."
+            )
 
         field, operator, value = condition
 
@@ -154,7 +222,7 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
         update_route: Union[bool, DEPENDENCIES] = True,
         delete_one_route: Union[bool, DEPENDENCIES] = True,
         delete_all_route: Union[bool, DEPENDENCIES] = True,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> None:
         # assert (
         #     tortoise_installed
@@ -179,20 +247,22 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             update_route=update_route,
             delete_one_route=delete_one_route,
             delete_all_route=delete_all_route,
-            **kwargs
+            **kwargs,
         )
 
     def _get_all(self, *args: Any, **kwargs: Any) -> CALLABLE_LIST:
         async def route(pagination: PAGINATION = self.pagination) -> List[Model]:
             skip, limit = pagination.get("skip"), pagination.get("limit")
-            query = self.db_model.all().offset(cast(int, skip))
+
+            query = self.db_model.all()
+            total = await query.count()
+
+            query = query.offset(cast(int, skip))
             if limit:
                 query = query.limit(limit)
             objs = await query
 
-            return resp_success(
-                convert_to_pydantic(objs, self.schema)
-            )
+            return resp_success(convert_to_pydantic(objs, self.schema), total=total)
 
         return route
 
@@ -238,7 +308,6 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
 
         return route
 
-
     #################################################################################
     def _kcreate(self, *args: Any, **kwargs: Any) -> CALLABLE:
         async def route(
@@ -249,7 +318,6 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             return resp_success(convert_to_pydantic(obj, self.schema))
 
         return route
-    
 
     def _kdelete_one(self, *args: Any, **kwargs: Any) -> CALLABLE:
         async def route(
@@ -257,7 +325,9 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             _hard: bool = True,
         ) -> RespModelT[Optional[bool]]:
             if _hard is False:
-                ret = await self.db_model.filter(**{self._pk: item_id, "enabled_flag": 1 }).update(enabled_flag=0)
+                ret = await self.db_model.filter(
+                    **{self._pk: item_id, "enabled_flag": 1}
+                ).update(enabled_flag=0)
             else:
                 ret = await self.db_model.filter(**{self._pk: item_id}).delete()
 
@@ -267,7 +337,7 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
 
     def _kdelete_all(self, *args: Any, **kwargs: Any) -> CALLABLE_LIST:
         async def route(
-            _hard: bool = True, 
+            _hard: bool = True,
         ) -> RespModelT[Optional[int]]:
             if _hard is False:
                 ret = await self.db_model.filter(enabled_flag=1).update(enabled_flag=0)
@@ -278,14 +348,10 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
 
         return route
 
-
-
-
     def _kupdate(self, *args: Any, **kwargs: Any) -> CALLABLE:
         async def route(
             model: self.schema,
             request: Request,
-            
         ) -> RespModelT[Optional[self.schema]]:
             obj = await self.db_model.get(**{self._pk: getattr(model, self._pk)})
 
@@ -304,29 +370,33 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             request: Request,
             relationships: bool = False,
             user_data_filter: self.user_data_filter_type = self.user_data_filter_defv,
-            
         ) -> RespModelT[Optional[self.schema]]:
             filter_dict = filter.model_dump(exclude_none=True)
-            
+
             query = self.db_model.filter(enabled_flag=True)
 
             if (
                 user_data_filter == UserDataFilter.SELF_DATA
                 or user_data_filter == UserDataFilterSelf.SELF_DATA
             ):
-                if hasattr(request.state, 'user_id'):
+                if hasattr(request.state, "user_id"):
                     query = query.filter(created_by=request.state.user_id)
-
-            if relationships:
-                query = self.__autoload_options(query)
 
             if filter_dict:
                 query = query.filter(**filter_dict)
 
+            if relationships:
+                query = self.__autoload_options(query)
+
             obj = await query.first()
 
+            # if relationships:
+            #     await obj.fetch_related(self.db_model._meta.fetch_fields)
+
             if obj:
-                return resp_success( convert_to_pydantic(obj, self.schema, relationships) )
+                return resp_success(
+                    convert_to_pydantic(obj, self.schema, relationships)
+                )
             else:
                 raise NOT_FOUND
 
@@ -334,10 +404,7 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
 
     # 自动加载选项函数
     def __autoload_options(self, query: QuerySet) -> QuerySet:
-        for field in self.db_model._meta.fields_map.values():
-            if field.__class__.__name__ in ["BackwardFKRelation", "ForeignKeyField", "ManyToManyField"]:
-                query = query.prefetch_related(field.name)
-        return query
+        return query.prefetch_related(*self.db_model._meta.fetch_fields)
 
     # list
     def _klist(self, *args: Any, **kwargs: Any) -> CALLABLE:
@@ -347,23 +414,19 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             sort_by: str = Query(None, description="Sort records by this field"),
             relationships: bool = False,
             user_data_filter: self.user_data_filter_type = self.user_data_filter_defv,
-            
         ) -> RespModelT[Optional[List[self.schema]]]:
             skip, limit = pagination.get("skip"), pagination.get("limit")
-         
+
             query = self.db_model.filter(enabled_flag=True)
 
             if (
                 user_data_filter == UserDataFilter.SELF_DATA
                 or user_data_filter == UserDataFilterSelf.SELF_DATA
             ):
-                if hasattr(request.state, 'user_id'):
+                if hasattr(request.state, "user_id"):
                     query = query.filter(created_by=request.state.user_id)
 
             total = await query.count()
-
-            if relationships:
-                query = self.__autoload_options(query)
 
             if sort_by:
                 query = query.order_by(sort_by)
@@ -374,7 +437,13 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             if limit:
                 query = query.limit(limit)
 
+            if relationships:
+                query = self.__autoload_options(query)
+
             objs = await query
+
+            # if relationships:
+            #     await objs.fetch_related(self.db_model._meta.fetch_fields)
 
             return resp_success(
                 convert_to_pydantic(objs, self.schema, relationships), total=total
@@ -391,28 +460,24 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             sort_by: str = Query(None, description="Sort records by this field"),
             relationships: bool = False,
             user_data_filter: self.user_data_filter_type = self.user_data_filter_defv,
-            
         ) -> RespModelT[Optional[List[self.schema]]]:
             filter_dict = filter.model_dump(exclude_none=True)
-            
+
             skip, limit = pagination.get("skip"), pagination.get("limit")
-         
+
             query = self.db_model.filter(enabled_flag=True)
 
             if (
                 user_data_filter == UserDataFilter.SELF_DATA
                 or user_data_filter == UserDataFilterSelf.SELF_DATA
             ):
-                if hasattr(request.state, 'user_id'):
+                if hasattr(request.state, "user_id"):
                     query = query.filter(created_by=request.state.user_id)
 
             if filter_dict:
                 query = query.filter(**filter_dict)
 
             total = await query.count()
-
-            if relationships:
-                query = self.__autoload_options(query)
 
             if sort_by:
                 query = query.order_by(sort_by)
@@ -423,7 +488,13 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             if limit:
                 query = query.limit(limit)
 
+            if relationships:
+                query = self.__autoload_options(query)
+
             objs = await query
+
+            # if relationships:
+            #     await objs.fetch_related(self.db_model._meta.fetch_fields)
 
             return resp_success(
                 convert_to_pydantic(objs, self.schema, relationships), total=total
@@ -441,10 +512,9 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             sort_by: str = Query(None, description="Sort records by this field"),
             relationships: bool = False,
             user_data_filter: self.user_data_filter_type = self.user_data_filter_defv,
-            
         ) -> RespModelT[Optional[List[self.schema]]]:
             skip, limit = pagination.get("skip"), pagination.get("limit")
-         
+
             try:
                 sql_query = self.db_model.filter(enabled_flag=True)
 
@@ -452,11 +522,8 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
                     user_data_filter == UserDataFilter.SELF_DATA
                     or user_data_filter == UserDataFilterSelf.SELF_DATA
                 ):
-                    if hasattr(request.state, 'user_id'):
+                    if hasattr(request.state, "user_id"):
                         sql_query = sql_query.filter(created_by=request.state.user_id)
-
-                if relationships:
-                    sql_query = self.__autoload_options(sql_query)
 
                 if query:
                     sql_query = parse_query(query, sql_query)
@@ -472,7 +539,13 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
                 if limit:
                     sql_query = sql_query.limit(limit)
 
+                if relationships:
+                    sql_query = self.__autoload_options(sql_query)
+
                 objs = await sql_query
+
+                # if relationships:
+                #     await objs.fetch_related(self.db_model._meta.fetch_fields)
 
                 return resp_success(
                     convert_to_pydantic(objs, self.schema, relationships), total=total
@@ -490,7 +563,6 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
         async def route(
             model: self.schema,  # type: ignore
             request: Request,
-            
         ) -> RespModelT[Optional[self.schema]]:
             if hasattr(model, self._pk):
                 item_id = getattr(model, self._pk)
@@ -498,19 +570,22 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
                 obj = await self.db_model.filter(**{self._pk: item_id}).first()
                 if obj:
                     await self.__update_obj_with_model(obj, model, request)
-                    return resp_success(convert_to_pydantic(obj, self.schema), msg="update")
+                    return resp_success(
+                        convert_to_pydantic(obj, self.schema), msg="update"
+                    )
 
             obj = await self.__create_obj_with_model(model, request, exclude=None)
             return resp_success(convert_to_pydantic(obj, self.schema), msg="created")
-                   
+
             # model_dict = model.model_dump(exclude={self._pk}, exclude_none=True)
             # params = await self.handle_data(model_dict, True, request)
             # obj, created = await self.db_model.update_or_create( **{self._pk: item_id}, defaults=params )
 
         return route
 
-
-    async def __create_obj_with_model(self, model, request: Request, exclude: IncEx = None):
+    async def __create_obj_with_model(
+        self, model, request: Request, exclude: IncEx = None
+    ):
         model_dict = model.model_dump(exclude=exclude, exclude_none=True)
         params = await self.__handle_data(model_dict, True, request)
         obj = self.db_model(**params)
@@ -518,49 +593,54 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
         return obj
 
     async def __update_obj_with_model(self, obj, model, request: Request):
-        model_dict = model.model_dump(exclude={self._pk}, exclude_none=True)
+        # 去掉关联对象
+        model_dict = model.model_dump(
+            exclude={self._pk, *self.db_model._meta.fetch_fields}, exclude_none=True
+        )
 
         ##########################################################################################
         # Relationships
-        # relation_field = {
-        #     key[:-7]: value
-        #     for key, value in model_dict.items()
-        #     if (
-        #         value
-        #         and key.endswith("_refids")
-        #         and hasattr(self.db_model, key[:-7])
-        #     )
-        # }
+        relation_field = {
+            key[:-7]: value
+            for key, value in model_dict.items()
+            if (value and key.endswith("_refids") and hasattr(self.db_model, key[:-7]))
+        }
 
-        # for rkey, rlist in relation_field.items():
-        #     # 删除 relation_field, 否则 if hasattr(raw_to_update, key): 会异常
-        #     if rkey in model_dict:
-        #         del model_dict[rkey]
+        obj_id = getattr(obj, self._pk)
+        for rkey, rlist in relation_field.items():
+            related_field = self.db_model._meta.fields_map[rkey]
+            rclass = related_field.related_model
+            rpk: str = rclass._meta.pk_attr
 
-        #     prop = self.db_model.__mapper__.get_property(rkey)
-        #     if isinstance(prop, Relationship):
-        #         rclass = prop.mapper.class_
-        #         rpk: str = rclass.__table__.primary_key.columns.keys()[0]
+            filter_conditions = Q(**{f"{rpk}__in": rlist})
+            if isinstance(related_field, fields.relational.BackwardFKRelation):
+                rfield = related_field.relation_field
+                update_val = {rfield: obj_id}
+                none_val = {rfield: None}
 
-        #         rmodels = await db.execute(
-        #             select(rclass).where(getattr(rclass, rpk).in_(rlist))
-        #         )
-
-        #         if prop.secondary is not None:
-        #             rmodel_list = rmodels.scalars().fetchall()
-        #             await db.run_sync(
-        #                 lambda session: getattr(raw_to_update, rkey)
-        #             )
-        #             setattr(raw_to_update, rkey, rmodel_list)
-        #         else:
-        #             for rmodel in rmodels.scalars():
-        #                 setattr(rmodel, prop.back_populates, raw_to_update)
+                # 使用事务进行批量更新
+                async with transactions.in_transaction():
+                    # 1. 删掉所有指向obj_id的外键引用
+                    await rclass.filter(**update_val).update(**none_val)
+                    # 2. 更新关联数据的外键
+                    await rclass.filter(filter_conditions).update(**update_val)
+            elif isinstance(related_field, fields.relational.ManyToManyFieldInstance):
+                rfield = related_field.model_field_name
+                await obj.fetch_related(rfield)
+                obj_related = getattr(obj, rfield)
+                await obj_related.clear()
+                filter_conditions = Q(**{f"{self._pk}__in": rlist})
+                robjs = await rclass.filter(filter_conditions)
+                for robj in robjs:
+                    await obj_related.add(robj)
+            else:
+                pass
 
         ##########################################################################################
 
         params = await self.__handle_data(model_dict, False, request)
 
-            # Update the fields with provided data
+        # Update the fields with provided data
         for key, value in params.items():
             if hasattr(obj, key):
                 setattr(obj, key, value)
@@ -589,10 +669,10 @@ class TortoiseCRUDRouter(CRUDGenerator[SCHEMA]):
             }
 
             # 添加属性
-            params["trace_id"] = getattr(request.state, 'trace_id', 0)
+            params["trace_id"] = getattr(request.state, "trace_id", 0)
 
             # User Info
-            user_id = getattr(request.state, 'user_id', 0)
+            user_id = getattr(request.state, "user_id", 0)
 
             # if not params.get(self._pk, None):
             #     params["created_by"] = user_id
