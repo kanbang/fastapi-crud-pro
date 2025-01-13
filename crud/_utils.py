@@ -79,21 +79,25 @@ def pagination_factory(max_limit: Optional[int] = None) -> Any:
     return Depends(pagination)
 
 
+
+# total:number 总记录数
+
 def resp_success(
     data=None,
-    total=None,
-    code=0,
+    total: int=None,
+    code="0000",
     msg="OK",
     http_code=status.HTTP_200_OK,
     headers={},
 ):
-    if data is None:
-        data = {}
+    success = True if code == "0000" else False
 
-    success = True if code == 0 else False
-    meta = {"total": 0 if total is None else total}
+    rdata = {"data": data}
+    if total is not None:
+        rdata["meta"] = {"total": total}
+
     content = dict(
-        code=code, msg=msg, meta=meta, data=data, success=success
+        code=code, msg=msg, data=rdata, success=success
     )
 
     return ORJSONResponse(status_code=http_code, content=content, headers=headers)

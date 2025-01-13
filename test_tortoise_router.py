@@ -4,7 +4,7 @@ version: 0.x
 Author: zhai
 Date: 2024-05-25 21:37:06
 LastEditors: zhai
-LastEditTime: 2024-05-25 21:42:30
+LastEditTime: 2024-06-09 09:05:30
 '''
 from typing import Union
 
@@ -43,8 +43,12 @@ register_tortoise(
 )
 
 from tortoisedemo.api.dummy.views import dummy_router
+from tortoisedemo.api.relation.views import employee_router, team_router, department_router
 
 app.include_router(dummy_router)
+app.include_router(employee_router)
+app.include_router(team_router)
+app.include_router(department_router)
 
 @app.get("/")
 def read_root():
